@@ -39,19 +39,27 @@ DRIVE_FOLDER_ID = "1zwQoKtOK..."  # <-- Sesuaikan ID Folder Drive kamu
 # 2. AMBIL FILE CSV DARI GMAIL
 # ==========================================
 def download_latest_csv_from_gmail():
-    print("📧 Merekam email terbaru dari Gmail...")
+    print("📧 Merekam email UNPROCESSED dari Gmail...")
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select("inbox")
 
-    # Cari email dari Kapture / Backlog Report
-    status, messages = mail.search(None, 'ALL')
+    # 1. Cari email yang BELUM dibaca (UNSEEN) & BELUM di-label PROCESSED_BACKLOG
+    # IMAP Search query: UNSEEN NOT KEYWORD PROCESSED_BACKLOG
+    status, messages = mail.search(None, 'UNSEEN', 'NOT', 'KEYWORD', 'PROCESSED_BACKLOG')
     mail_ids = messages[0].split()
-    
-    if not mail_ids:
-        raise Exception("Tidak ada email ditemukan di Inbox.")
 
-    # Ambil email paling terakhir
+    if not mail_ids:
+        # Opsional: Jika tidak ada email unread baru, ambil email TERBARU yang belum berlabel
+        status, messages = mail.search(None, 'NOT', 'KEYWORD', 'PROCESSED_BACKLOG')
+        mail_ids = messages[0].split()
+
+    if not mail_ids:
+        print("⚠️ Tidak ada email baru yang perlu diproses hari ini!")
+        mail.logout()
+        return None, None, None, None
+
+    # Ambil ID email paling terakhir
     latest_email_id = mail_ids[-1]
     status, msg_data = mail.fetch(latest_email_id, "(RFC822)")
 
@@ -73,12 +81,25 @@ def download_latest_csv_from_gmail():
                     file_name = filename
                     break
 
-    mail.logout()
     if not csv_content:
-        raise Exception("❌ Lampiran CSV tidak ditemukan pada email terbaru!")
-    
-    print(f"✅ Berhasil mengunduh lampiran: {file_name}")
-    return csv_content, file_name
+        mail.logout()
+        raise Exception("❌ Email ditemukan tetapi tidak ada lampiran CSV!")
+
+    print(f"✅ Berhasil mengambil lampiran email: {file_name}")
+    return csv_content, file_name, mail, latest_email_id
+
+def mark_email_as_processed(mail, email_id):
+    """Memberi label PROCESSED_BACKLOG dan menandai terbaca di Gmail"""
+    try:
+        print("🏷️ Menandai email dengan label 'PROCESSED_BACKLOG'...")
+        # Tambahkan flag/keyword IMAP (di Gmail akan menjadi Label)
+        mail.store(email_id, '+FLAGS', 'PROCESSED_BACKLOG')
+        # Tandai sebagai terbaca (\Seen)
+        mail.store(email_id, '+FLAGS', '\\Seen')
+        mail.logout()
+        print("✅ Email berhasil di-label & di-archive!")
+    except Exception as e:
+        print(f"⚠️ Gagal memberi label email: {str(e)}")
 
 # ==========================================
 # 3. LOGIKA ANALISIS SELEPAS MANAGER OPS
@@ -236,10 +257,19 @@ def upload_to_drive(csv_bytes, file_name):
 # ==========================================
 if __name__ == "__main__":
     try:
-        csv_bytes, file_name = download_latest_csv_from_gmail()
+        csv_bytes, file_name, mail, email_id = download_latest_csv_from_gmail()
+        
+        if csv_bytes is None:
+            print("🚀 Tidak ada data baru. Auto-run selesai tanpa perubahan.")
+            exit(0)
+
         metrics = process_and_analyze_backlog(csv_bytes)
         update_google_sheets(metrics)
         upload_to_drive(csv_bytes, file_name)
+        
+        # Tandai email agar tidak diproses lagi besok!
+        mark_email_as_processed(mail, email_id)
+        
         print("🎉 AUTOMATION SELESAI DENGAN SUKSES!")
     except Exception as e:
         print(f"❌ ERROR: {str(e)}")
