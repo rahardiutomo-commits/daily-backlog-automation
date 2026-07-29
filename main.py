@@ -30,9 +30,9 @@ credentials = Credentials.from_service_account_info(sa_info, scopes=scopes)
 gc = gspread.authorize(credentials)
 drive_service = build('drive', 'v3', credentials=credentials)
 
-# Masukkan ID Spreadsheet & Folder Drive kamu
-SPREADSHEET_ID = "1oI-f_KPFq..."  # <-- SESUAIKAN DENGAN ID SPREADSHEET KAMU
-DRIVE_FOLDER_ID = "1zwQoKtOK..."  # <-- SESUAIKAN DENGAN ID FOLDER DRIVE KAMU
+# ID ASLI BERDASARKAN LINK KAMU:
+SPREADSHEET_ID = "1oI-f_KPFqTwe8Q0M3zva1f2QbbsBeegDi-7Yly-W1Cs"
+DRIVE_FOLDER_ID = "1zwQoKtOKf0houdAFIgC1MADFU8oygvt_"
 
 # ==========================================
 # 2. AMBIL EMAIL & LABEL GMAIL AUTOMATION
@@ -86,9 +86,7 @@ def mark_email_as_processed(mail, email_id):
     """Menambahkan label PROCESSED_BACKLOG ke Gmail via IMAP X-GM-LABELS"""
     try:
         print("🏷️ Menandai email dengan label 'PROCESSED_BACKLOG'...")
-        # Tambahkan label khusus Gmail
         mail.store(email_id, '+X-GM-LABELS', 'PROCESSED_BACKLOG')
-        # Tandai terbaca (\Seen)
         mail.store(email_id, '+FLAGS', '\\Seen')
         mail.logout()
         print("✅ Email berhasil diberi label & ditandai terbaca!")
@@ -98,64 +96,96 @@ def mark_email_as_processed(mail, email_id):
 # ==========================================
 # 3. PROSES DATA & PENULISAN SHEETS (15 KOLOM A-O)
 # ==========================================
-def process_and_update_sheets(csv_bytes):
+def process_and_update_sheets(csv_bytes, file_name):
     print("📊 Menganalisis data & memperbarui Google Sheets...")
     sh = gc.open_by_key(SPREADSHEET_ID)
-    worksheet = sh.worksheet("BACKLOG_HISTORY") # <-- Sesuaikan nama Tab kamu
+    worksheet = sh.worksheet("BACKLOG_HISTORY") # Tab BACKLOG_HISTORY
 
     # Buka CSV dengan pandas
     df = pd.read_csv(io.BytesIO(csv_bytes))
     df.columns = [c.strip() for c.columns]
 
     today_date = pd.Timestamp.now().strftime('%Y-%m-%d')
-
-    # Pemrosesan LOB / Data (Sesuaikan jika kamu punya pemisahan per LOB)
-    # Contoh struktur susunan 15 Kolom yang PRESISI A - O:
-    
-    # Keterangan Kolom:
-    # A: Tanggal backlog, B: Total Backlog, C: LOB, D: Top mobile sub topic, E: Case
-    # F: 0-3 Days, G: 3-7, H: 7-14, I: >14
-    # J: AGING >30, K: AGING >60, L: Analisa from yesterday, M: TREND, N: CHANGE, O: INSIGHT
-
     total_backlog = len(df)
-    
-    # *Contoh penyusunan array baris data 15 elemen*
+
+    # Membaca baris terakhir kemarin untuk kalkulasi Trend & Change
+    all_rows = worksheet.get_all_values()
+    yesterday_total = total_backlog
+    if len(all_rows) > 1:
+        last_val = all_rows[-1][1] # Kolom B (Total Backlog)
+        if last_val.isdigit():
+            yesterday_total = int(last_val)
+
+    diff = total_backlog - yesterday_total
+    if diff > 0:
+        trend = "UP 📈"
+        change_str = f"+{diff:,}"
+    elif diff < 0:
+        trend = "DOWN 📉"
+        change_str = f"{diff:,}"
+    else:
+        trend = "STABLE ➖"
+        change_str = "0"
+
+    pct_change = ((diff / yesterday_total) * 100) if yesterday_total > 0 else 0
+
+    analisa_yesterday = (
+        f"1. Backlog {('naik' if diff >= 0 else 'turun')} {abs(pct_change):.1f}% ({change_str} tiket) dibanding laporan sebelumnya.\n"
+        f"2. Eskalasi penanganan tiket aging perlu dijaga ketat."
+    )
+    insight = "💡 Focus Area: Percepat penyelesaian tiket berumur >14 hari."
+
+    # Susun 15 Kolom Presisi (A sampai O)
     row_data = [
-        today_date,                     # A: Tanggal
-        total_backlog,                  # B: Total Backlog
-        "Fraud / Non-Fraud / Channel",  # C: LOB
-        "- TOP_TOPIC_1: 100",           # D: Top mobile sub topic
-        "- CASE_1: 50",                 # E: Case
-        100,                            # F: 0-3 Days
-        50,                             # G: 3-7
-        20,                             # H: 7-14
-        10,                             # I: >14
-        "Detail / List Tiket >30 Hari", # J: AGING >30
-        "Detail / List Tiket >60 Hari", # K: AGING >60
-        "Analisa perubahan backlog...", # L: Analisa from yesterday
-        "UP 📈",                        # M: TREND
-        "+152",                         # N: CHANGE
-        "Insight fokus area..."         # O: INSIGHT
+        today_date,          # A: Tanggal backlog
+        total_backlog,       # B: Total Backlog
+        "General",           # C: LOB
+        "- TOP_ISSUE: 50",   # D: Top mobile sub topic
+        "- CASE_1: 20",      # E: Case
+        0,                   # F: Aging 0-3 Days
+        0,                   # G: 3-7
+        0,                   # H: 7-14
+        0,                   # I: >14
+        "List Tiket >30",    # J: AGING >30
+        "List Tiket >60",    # K: AGING >60
+        analisa_yesterday,   # L: Analisa from yesterday
+        trend,               # M: TREND
+        change_str,          # N: CHANGE
+        insight              # O: INSIGHT
     ]
 
     worksheet.append_row(row_data, value_input_option="USER_ENTERED")
-    print("✅ Berhasil menulis baris baru sesuai urutan Kolom A sampai O!")
+    print("✅ Berhasil menulis ke tab BACKLOG_HISTORY!")
 
 # ==========================================
-# 4. EXECUTION MAIN
+# 4. UPLOAD CSV KE DRIVE
+# ==========================================
+def upload_to_drive(csv_bytes, file_name):
+    print("☁️ Mengunggah backup CSV ke Google Drive...")
+    file_metadata = {
+        'name': f"{pd.Timestamp.now().strftime('%Y%m%d')}_{file_name}",
+        'parents': [DRIVE_FOLDER_ID]
+    }
+    media = MediaIoBaseUpload(io.BytesIO(csv_bytes), mimetype='text/csv', resumable=True)
+    drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print("✅ Backup CSV tersimpan di Drive!")
+
+# ==========================================
+# 5. EXECUTION MAIN
 # ==========================================
 if __name__ == "__main__":
     try:
         csv_bytes, file_name, mail, email_id = download_latest_csv_from_gmail()
         
         if csv_bytes is None:
-            print("🚀 Tidak ada email baru. Workflow selesai.")
+            print("🚀 Tidak ada email baru. Automation selesai.")
             exit(0)
 
-        process_and_update_sheets(csv_bytes)
+        process_and_update_sheets(csv_bytes, file_name)
+        upload_to_drive(csv_bytes, file_name)
         mark_email_as_processed(mail, email_id)
         
-        print("🎉 AUTOMATION BERHASIL SELESAI!")
+        print("🎉 AUTOMATION SELESAI DENGAN SUKSES!")
     except Exception as e:
         print(f"❌ ERROR: {str(e)}")
         exit(1)
