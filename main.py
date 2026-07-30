@@ -32,8 +32,8 @@ SPREADSHEET_ID = "1oI-f_KPFqTwe8Q0M3zva1f2QbbsBeegDi-7Yly-W1Cs"
 # HELPER FUNCTIONS (AGING & TOP5)
 # ==========================================
 def aging(df):
-    age_col = "Days Between Create To Current Date"
-    if age_col not in df.columns or df.empty:
+    age_col = next((c for c in df.columns if 'day' in c.lower() or 'aging' in c.lower() or 'create' in c.lower()), None)
+    if not age_col or df.empty:
         return 0, 0, 0, 0
     
     age_numeric = pd.to_numeric(df[age_col], errors="coerce").fillna(0)
@@ -44,9 +44,10 @@ def aging(df):
     return a0, a1, a2, a3
 
 def top5(df, col_name):
-    if col_name not in df.columns or df.empty:
+    actual_col = next((c for c in df.columns if col_name.lower() in c.lower()), None)
+    if not actual_col or df.empty:
         return ""
-    counts = df[col_name].value_counts().head(5)
+    counts = df[actual_col].value_counts().head(5)
     return "\n".join([f"- {k}: {v}" for k, v in counts.items()])
 
 # ==========================================
@@ -159,23 +160,49 @@ def process_and_update_sheets(csv_bytes, file_name, today):
 
     df_original.columns = [str(c).strip() for c in df_original.columns]
 
-    # QUEUE MAPPING & SPLIT LOB
-    queue_col = "Ticket Queue Name"
-    if queue_col not in df_original.columns:
-        queue_col = next((c for c in df_original.columns if 'queue' in c.lower()), queue_col)
+    # CARI KOLOM QUEUE SECARA DINAMIS
+    queue_col = next((c for c in df_original.columns if 'queue' in c.lower()), "Ticket Queue Name")
+    
+    # Cleaning Teks Queue (Abaikan Spasi, Huruf Kapital/Kecil)
+    queue_series_clean = df_original[queue_col].astype(str).str.strip().str.lower()
 
-    FRAUD_QUEUE = ["Bucket - CS Fraud", "CS Fraud", "L2 Fraud - Light Risk Fraud ATO", "View L3 fraud", "L2 Fraud - Tickets Escalation From CFM", "L2 Fraud - Tickets Escalation From Risk", "L2 Fraud - High Priority", "L2 Fraud - Tickets from Partner"]
-    NON_FRAUD_QUEUE = ["Agent Reset PIN L2", "Bucket - CS L2", "CS Support L2", "L2 Non Fraud - High Priority", "L2 Non Fraud - Tickets Escalation From TS Merchant & Channel", "L2 Non Fraud - DANA Bisnis", "L2 Non Fraud - Reset PIN (Re-Open Bulk Inactive Number)", "L2 Non Fraud - Change Number", "L2 Non Fraud - Tickets Escalation From Risk", "L2 Non Fraud - Tickets Escalation From AML", "L2 Non Fraud - Reset PIN (Re-Open Bulk Active Number)"]
-    CHANNEL_QUEUE = ["Channel Support", "Bucket - Channel Support", "L2 Channel - Quewise", "L2 Channel - Tickets From CFM", "L2 Channel - Tickets from Partner", "L2 Channel - All Ticket Over SLA"]
-    MERCHANT_QUEUE = ["Merchant Support", "Bucket - Merchant Support", "L2 Merchant - Tickets from Partner", "L2 Merchant - High Priority", "L2 Merchant - All QRIS Tickets", "L2 Merchant - Tickets Escalation From CFM", "L2 Merchant - Tickets Escalation From TS Merchant", "L2 Merchant - Quewise", "L2 Merchant - Tickets Escalation From Merchant Service", "QRIS_MS"]
+    RAW_FRAUD = [
+        "Bucket - CS Fraud", "CS Fraud", "L2 Fraud - Light Risk Fraud ATO", 
+        "View L3 fraud", "L2 Fraud - Tickets Escalation From CFM", 
+        "L2 Fraud - Tickets Escalation From Risk", "L2 Fraud - High Priority", 
+        "L2 Fraud - Tickets from Partner"
+    ]
+    RAW_NON_FRAUD = [
+        "Agent Reset PIN L2", "Bucket - CS L2", "CS Support L2", 
+        "L2 Non Fraud - High Priority", "L2 Non Fraud - Tickets Escalation From TS Merchant & Channel", 
+        "L2 Non Fraud - DANA Bisnis", "L2 Non Fraud - Reset PIN (Re-Open Bulk Inactive Number)", 
+        "L2 Non Fraud - Change Number", "L2 Non Fraud - Tickets Escalation From Risk", 
+        "L2 Non Fraud - Tickets Escalation From AML", "L2 Non Fraud - Reset PIN (Re-Open Bulk Active Number)"
+    ]
+    RAW_CHANNEL = [
+        "Channel Support", "Bucket - Channel Support", "L2 Channel - Quewise", 
+        "L2 Channel - Tickets From CFM", "L2 Channel - Tickets from Partner", 
+        "L2 Channel - All Ticket Over SLA"
+    ]
+    RAW_MERCHANT = [
+        "Merchant Support", "Bucket - Merchant Support", "L2 Merchant - Tickets from Partner", 
+        "L2 Merchant - High Priority", "L2 Merchant - All QRIS Tickets", 
+        "L2 Merchant - Tickets Escalation From CFM", "L2 Merchant - Tickets Escalation From TS Merchant", 
+        "L2 Merchant - Quewise", "L2 Merchant - Tickets Escalation From Merchant Service", "QRIS_MS"
+    ]
 
-    fraud_df = df_original[df_original[queue_col].isin(FRAUD_QUEUE)]
-    nonfraud_df = df_original[df_original[queue_col].isin(NON_FRAUD_QUEUE)]
-    channel_df = df_original[df_original[queue_col].isin(CHANNEL_QUEUE)]
-    merchant_df = df_original[df_original[queue_col].isin(MERCHANT_QUEUE)]
+    FRAUD_QUEUE = [q.strip().lower() for q in RAW_FRAUD]
+    NON_FRAUD_QUEUE = [q.strip().lower() for q in RAW_NON_FRAUD]
+    CHANNEL_QUEUE = [q.strip().lower() for q in RAW_CHANNEL]
+    MERCHANT_QUEUE = [q.strip().lower() for q in RAW_MERCHANT]
+
+    fraud_df = df_original[queue_series_clean.isin(FRAUD_QUEUE)]
+    nonfraud_df = df_original[queue_series_clean.isin(NON_FRAUD_QUEUE)]
+    merchant_df = df_original[queue_series_clean.isin(MERCHANT_QUEUE)]
+    channel_df = df_original[queue_series_clean.isin(CHANNEL_QUEUE)]
 
     # =====================================================
-    # OPEN GOOGLE SHEET & GET YESTERDAY DATE (FIXED)
+    # AMBIL DATA HISTORIS KEMARIN
     # =====================================================
     history_ws = spreadsheet.worksheet("BACKLOG_HISTORY")
     history_data = history_ws.get_all_values()
@@ -198,23 +225,23 @@ def process_and_update_sheets(csv_bytes, file_name, today):
                 print("⚠️ Gagal membaca tanggal kemarin dari history:", e)
 
     # =====================================================
-    # PROCESS LOB, ANALYSIS, & UPLOAD TARGETS
+    # PROSES LOB, ANALISA, & PENYUSUNAN KOLOM PRESISI (A-O)
     # =====================================================
     history_rows_to_append = []
 
     lob_targets = [
         ("FRAUD", "Fraud", fraud_df),
         ("NON FRAUD", "Non Fraud", nonfraud_df),
-        ("CHANNEL", "Channel", channel_df),
-        ("MERCHANT", "Merchant", merchant_df)
+        ("MERCHANT", "Merchant", merchant_df),
+        ("CHANNEL", "Channel", channel_df)
     ]
 
     ticket_id_col = next((c for c in df_original.columns if 'ticket' in c.lower() or 'id' in c.lower() or 'number' in c.lower()), df_original.columns[0])
 
     for sheet_name, lob_name, lob_df in lob_targets:
-        print(f"📊 Processing & Analyzing LOB: {lob_name}...")
+        print(f"📊 Processing & Analyzing LOB: {lob_name} (Total Data Kena Filter: {len(lob_df)})...")
 
-        # STEP A: AMBIL DATA KEMARIN MENGGUNAKAN GET_ALL_VALUES
+        # STEP A: AMBIL DATA HISTORIS DARI TAB INDIVIDU
         yesterday_lob_df = pd.DataFrame()
         try:
             ws = spreadsheet.worksheet(sheet_name)
@@ -236,28 +263,32 @@ def process_and_update_sheets(csv_bytes, file_name, today):
 
                 yesterday_lob_df = pd.DataFrame(old_data[1:], columns=cleaned_headers)
         except Exception as e:
-            print(f"ℹ️ Gagal mengambil selisih historis untuk tab {sheet_name}: {e}")
+            print(f"ℹ️ Gagal mengambil data historis tab {sheet_name}: {e}")
 
         total_today = len(lob_df)
         total_yesterday = len(yesterday_lob_df) if not yesterday_lob_df.empty else 0
         a0, a1, a2, a3 = aging(lob_df)
 
         # PILAR 1: ANALISA TREND VOLUME
+        trend_status = "STABLE ➖"
+        change_val = "0"
         trend_text = "Data hari pertama (belum ada pembanding)."
+        
         if total_yesterday > 0:
             diff = total_today - total_yesterday
             pct = round(abs(diff) / total_yesterday * 100, 1) if total_yesterday else 0
+            change_val = f"{diff:+,}"
             if diff > 0:
+                trend_status = f"UP ⬆️ (+{pct}%)"
                 trend_text = f"Backlog naik {pct}% ({diff:+,}) dibanding tanggal {yesterday}."
             elif diff < 0:
+                trend_status = f"DOWN ⬇️ (-{pct}%)"
                 trend_text = f"Backlog turun {pct}% ({diff:+,}) dibanding tanggal {yesterday}."
             else:
                 trend_text = f"Backlog stabil dibanding tanggal {yesterday}."
 
         # PILAR 2: KENAIKAN TERTINGGI SUB TOPIC
-        sub_col = "Mobile App - Sub Topic"
-        if sub_col not in lob_df.columns:
-            sub_col = next((c for c in lob_df.columns if 'sub' in c.lower() or 'topic' in c.lower()), "Sub Topic")
+        sub_col = next((c for c in lob_df.columns if 'sub' in c.lower() or 'topic' in c.lower()), "Sub Topic")
 
         point2_text = "2. Data Sub topic tidak tersedia untuk pembanding."
         if sub_col in lob_df.columns and not yesterday_lob_df.empty and sub_col in yesterday_lob_df.columns:
@@ -278,33 +309,36 @@ def process_and_update_sheets(csv_bytes, file_name, today):
 
         # PILAR 3: KONTRIBUTOR UTAMA CASE
         driver_text = "3. Tidak ada data case aktif hari ini."
-        case_col_name = "Case" if "Case" in lob_df.columns else next((c for c in lob_df.columns if 'case' in c.lower()), None)
-        if case_col_name and not lob_df.empty:
+        case_col_name = next((c for c in lob_df.columns if 'case' in c.lower() or 'issue' in c.lower()), "Case")
+        if case_col_name in lob_df.columns and not lob_df.empty:
             case_counts = lob_df[case_col_name].value_counts()
             if not case_counts.empty:
                 top_case_name = case_counts.index[0]
                 top_case_volume = case_counts.iloc[0]
                 driver_text = f"3. Kontributor backlog tertinggi utama hari ini adalah case '{top_case_name}' ({top_case_volume} tiket)."
 
-        # PILAR 4: BREAKDOWN DETAIL TICKETS >14 HARI (PERSISTEN VS BARU)
-        age_col = "Days Between Create To Current Date"
-        if age_col not in lob_df.columns:
-            age_col = next((c for c in lob_df.columns if 'aging' in c.lower() or 'day' in c.lower()), "Days")
+        # PILAR 4: BREAKDOWN DETAIL TICKETS >14 HARI & AGING >30/>60
+        age_col = next((c for c in lob_df.columns if 'day' in c.lower() or 'aging' in c.lower() or 'create' in c.lower()), "Days")
 
         persistent_list = []
         new_list = []
+        aging_30_list = []
+        aging_60_list = []
 
         if age_col in lob_df.columns and not lob_df.empty:
-            age_numeric_today = pd.to_numeric(lob_df[age_col], errors="coerce")
+            age_numeric_today = pd.to_numeric(lob_df[age_col], errors="coerce").fillna(0)
             today_over14_df = lob_df[age_numeric_today > 14]
+            today_over30_df = lob_df[age_numeric_today > 30]
+            today_over60_df = lob_df[age_numeric_today > 60]
 
             yesterday_over14_ids = set()
             if not yesterday_lob_df.empty and age_col in yesterday_lob_df.columns:
-                age_numeric_yesterday = pd.to_numeric(yesterday_lob_df[age_col], errors="coerce")
+                age_numeric_yesterday = pd.to_numeric(yesterday_lob_df[age_col], errors="coerce").fillna(0)
                 yesterday_over14_ids = set(yesterday_lob_df[age_numeric_yesterday > 14][ticket_id_col].dropna().astype(str))
 
-            c_name = case_col_name if case_col_name else (sub_col if sub_col in lob_df.columns else lob_df.columns[0])
+            c_name = case_col_name if case_col_name in lob_df.columns else (sub_col if sub_col in lob_df.columns else lob_df.columns[0])
 
+            # List Tiket >14 Hari
             for _, row in today_over14_df.iterrows():
                 t_id = str(row[ticket_id_col])
                 raw_age = pd.to_numeric(row[age_col], errors="coerce")
@@ -317,6 +351,18 @@ def process_and_update_sheets(csv_bytes, file_name, today):
                     persistent_list.append(bullet_point)
                 else:
                     new_list.append(bullet_point)
+
+            # List Tiket >30 Hari
+            for _, row in today_over30_df.head(10).iterrows():
+                t_id = str(row[ticket_id_col])
+                raw_age = pd.to_numeric(row[age_col], errors="coerce")
+                aging_30_list.append(f"• {t_id} | {int(raw_age)} Hari | -")
+
+            # List Tiket >60 Hari
+            for _, row in today_over60_df.head(10).iterrows():
+                t_id = str(row[ticket_id_col])
+                raw_age = pd.to_numeric(row[age_col], errors="coerce")
+                aging_60_list.append(f"• {t_id} | {int(raw_age)} Hari | -")
 
         aging_text = "Clean! Tidak ada tiket >14 hari."
         if a3 > 0:
@@ -331,10 +377,13 @@ def process_and_update_sheets(csv_bytes, file_name, today):
                 f"{new_str}"
             )
 
-        # GABUNGKAN FOUR-PILLARS ANALYSIS
         full_analysis = f"1. {trend_text}\n{point2_text}\n{driver_text}\n\n{aging_text}"
 
-        # STEP B: UPLOAD DATA BARU KE TAB LOB (FRAUD, NON FRAUD, CHANNEL, MERCHANT)
+        text_aging_30 = f"Persisten ({len(aging_30_list)})\n" + "\n".join(aging_30_list) if aging_30_list else "Persisten (0)"
+        text_aging_60 = f"Persisten ({len(aging_60_list)})\n" + "\n".join(aging_60_list) if aging_60_list else "Persisten (0)"
+        insight_text = f"💡 Focus LOB {lob_name}: Penanganan tiket aging >14 hari."
+
+        # STEP B: UPDATE TAB LOB INDIVIDU
         try:
             ws_target = spreadsheet.worksheet(sheet_name)
             ws_target.clear()
@@ -355,24 +404,31 @@ def process_and_update_sheets(csv_bytes, file_name, today):
         except Exception as e:
             print(f"⚠️ Warning updating tab {sheet_name}: {e}")
 
-        # Simpan baris analisa ke array history
-        history_rows_to_append.append([
-            today,
-            total_today,
-            lob_name,
-            top5(lob_df, sub_col),
-            top5(lob_df, case_col_name if case_col_name else "Case"),
-            a0,
-            a1,
-            a2,
-            a3,
-            full_analysis
-        ])
+        # STEP C: STRUCTURE STRUKTUR TEPAT 15 KOLOM (A s.d O)
+        row_data = [
+            today,                       # A: Tanggal backlog
+            total_today,                 # B: Total Backlog
+            lob_name,                    # C: LOB
+            top5(lob_df, sub_col),       # D: Top mobile sub topic
+            top5(lob_df, case_col_name),  # E: Case
+            a0,                          # F: Aging 0-3 Days
+            a1,                          # G: 3-7
+            a2,                          # H: 7-14
+            a3,                          # I: >14
+            text_aging_30,               # J: AGING >30
+            text_aging_60,               # K: AGING >60
+            full_analysis,               # L: Analisa (4 Pilar)
+            trend_status,                # M: TREND
+            change_val,                  # N: CHANGE
+            insight_text                 # O: INSIGHT
+        ]
+        
+        history_rows_to_append.append(row_data)
 
     # APPEND TO BACKLOG_HISTORY
-    print("📝 Appending all analytics to BACKLOG_HISTORY...")
+    print("📝 Appending all analytics into BACKLOG_HISTORY with 15 columns precision...")
     history_ws.append_rows(history_rows_to_append, value_input_option="USER_ENTERED")
-    print("🎉 DONE SUCCESSFULLY WITH ADVANCED COMPARATIVE ANALYSIS!")
+    print("🎉 DONE SUCCESSFULLY WITH MATCHED FIGURES & PERFECT FORMATTING!")
 
 # ==========================================
 # 4. EXECUTION MAIN
