@@ -3,7 +3,6 @@ import io
 import json
 import imaplib
 import email
-from email.header import decode_header
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -42,8 +41,11 @@ def download_latest_csv_from_gmail():
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select("inbox")
 
-    # Cari email yang BELUM berlabel PROCESSED_BACKLOG
-    status, messages = mail.search(None, 'NOT', 'X-GM-LABELS', 'PROCESSED_BACKLOG')
+    try:
+        status, messages = mail.search(None, 'X-GM-RAW', 'NOT label:PROCESSED_BACKLOG')
+    except Exception:
+        status, messages = mail.search(None, 'UNSEEN')
+
     mail_ids = messages[0].split()
 
     if not mail_ids:
@@ -67,19 +69,22 @@ def download_latest_csv_from_gmail():
                     continue
                 
                 filename = part.get_filename()
-                if filename and (filename.endswith('.csv') or filename.endswith('.xls')):
+                if filename and (filename.endswith('.csv') or filename.endswith('.xls') or filename.endswith('.xlsx')):
                     csv_content = part.get_payload(decode=True)
                     file_name = filename
                     break
 
     if not csv_content:
         mail.logout()
-        raise Exception("❌ Email ditemukan tetapi tidak ada lampiran CSV!")
+        print("⚠️ Email ditemukan tetapi tidak ada lampiran file CSV/Excel.")
+        return None, None, None, None
 
     print(f"✅ Berhasil mengambil lampiran email: {file_name}")
     return csv_content, file_name, mail, latest_email_id
 
 def mark_email_as_processed(mail, email_id):
+    if not mail or not email_id:
+        return
     try:
         print("🏷️ Menandai email dengan label 'PROCESSED_BACKLOG'...")
         mail.store(email_id, '+X-GM-LABELS', 'PROCESSED_BACKLOG')
@@ -87,10 +92,10 @@ def mark_email_as_processed(mail, email_id):
         mail.logout()
         print("✅ Email berhasil diberi label & ditandai terbaca!")
     except Exception as e:
-        print(f"⚠️ Gagal memberi label email: {str(e)}")
+        print(f"⚠️ Catatan pelabelan email: {str(e)}")
 
 # ==========================================
-# 3. PROSES DATA PER LOB & UPDATE SHEETS
+# 3. PROSES DATA & UPDATE SHEETS
 # ==========================================
 def process_and_update_sheets(csv_bytes, file_name):
     print("📊 Menganalisis data & memperbarui Google Sheets...")
@@ -98,55 +103,55 @@ def process_and_update_sheets(csv_bytes, file_name):
     worksheet = sh.worksheet("BACKLOG_HISTORY")
 
     df = pd.read_csv(io.BytesIO(csv_bytes))
-    df.columns = [c.strip() for c.columns]
+    df.columns = [str(c).strip() for c in df.columns]
 
     today_date = pd.Timestamp.now().strftime('%Y-%m-%d')
-
-    # Pemetaan LOB
     lobs = ['Fraud', 'Non Fraud', 'Channel']
     
     for lob in lobs:
-        # Filter dataframe per LOB jika ada kolom LOB/Category di CSV
-        if 'LOB' in df.columns:
-            sub_df = df[df['LOB'].str.contains(lob, case=False, na=False)]
-        elif 'Category' in df.columns:
-            sub_df = df[df['Category'].str.contains(lob, case=False, na=False)]
+        lob_col = next((c for c in df.columns if c.lower() in ['lob', 'category', 'kategori']), None)
+        if lob_col:
+            sub_df = df[df[lob_col].astype(str).str.contains(lob, case=False, na=False)]
         else:
-            sub_df = df # Fallback jika tidak ada kolom LOB
+            sub_df = df
 
         total_backlog = len(sub_df)
-        if total_backlog == 0 and not df.empty:
+        if total_backlog == 0 and not df.empty and lob_col:
             continue
 
-        # Top Mobile Sub Topic & Case
+        topic_col = next((c for c in df.columns if 'topic' in c.lower() or 'sub' in c.lower()), None)
+        case_col = next((c for c in df.columns if 'case' in c.lower() or 'issue' in c.lower()), None)
+
         top_topic_str = ""
-        if 'Sub Topic' in sub_df.columns and not sub_df.empty:
-            top_topics = sub_df['Sub Topic'].value_counts().head(5)
+        if topic_col and not sub_df.empty:
+            top_topics = sub_df[topic_col].value_counts().head(5)
             top_topic_str = "\n".join([f"- {k}: {v}" for k, v in top_topics.items()])
 
         top_case_str = ""
-        if 'Case' in sub_df.columns and not sub_df.empty:
-            top_cases = sub_df['Case'].value_counts().head(5)
+        if case_col and not sub_df.empty:
+            top_cases = sub_df[case_col].value_counts().head(5)
             top_case_str = "\n".join([f"- {k}: {v}" for k, v in top_cases.items()])
 
-        # Hitung Aging
-        aging_0_3 = len(sub_df[sub_df['Aging'] <= 3]) if 'Aging' in sub_df.columns else 0
-        aging_3_7 = len(sub_df[(sub_df['Aging'] > 3) & (sub_df['Aging'] <= 7)]) if 'Aging' in sub_df.columns else 0
-        aging_7_14 = len(sub_df[(sub_df['Aging'] > 7) & (sub_df['Aging'] <= 14)]) if 'Aging' in sub_df.columns else 0
-        aging_14_plus = len(sub_df[sub_df['Aging'] > 14]) if 'Aging' in sub_df.columns else 0
+        aging_col = next((c for c in df.columns if 'aging' in c.lower() or 'day' in c.lower() or 'hari' in c.lower()), None)
 
-        # Ringkasan AGING >30 dan >60 (Singkat agar tidak merusak kolom J & K)
-        cnt_30 = len(sub_df[sub_df['Aging'] > 30]) if 'Aging' in sub_df.columns else 0
-        cnt_60 = len(sub_df[sub_df['Aging'] > 60]) if 'Aging' in sub_df.columns else 0
+        if aging_col:
+            sub_df_aging = pd.to_numeric(sub_df[aging_col], errors='coerce').fillna(0)
+            aging_0_3 = len(sub_df[sub_df_aging <= 3])
+            aging_3_7 = len(sub_df[(sub_df_aging > 3) & (sub_df_aging <= 7)])
+            aging_7_14 = len(sub_df[(sub_df_aging > 7) & (sub_df_aging <= 14)])
+            aging_14_plus = len(sub_df[sub_df_aging > 14])
+            cnt_30 = len(sub_df[sub_df_aging > 30])
+            cnt_60 = len(sub_df[sub_df_aging > 60])
+        else:
+            aging_0_3 = aging_3_7 = aging_7_14 = aging_14_plus = cnt_30 = cnt_60 = 0
 
         text_aging_30 = f"Ticket >30 Hari: {cnt_30}"
         text_aging_60 = f"Ticket >60 Hari: {cnt_60}"
 
-        # Analisa & Insight untuk LOB ini
         analisa_text = (
             f"1. Total backlog {lob}: {total_backlog} tiket.\n"
             f"2. Tiket berumur >14 hari sebanyak {aging_14_plus} tiket.\n"
-            f"3. Kontributor terbesar didominasi sub-topic terkait."
+            f"3. Kontributor terbesar didominasi sub-topic utama."
         )
         trend_status = "STABLE ➖"
         change_val = "0"
@@ -156,16 +161,16 @@ def process_and_update_sheets(csv_bytes, file_name):
         row_data = [
             today_date,      # A: Tanggal backlog
             total_backlog,   # B: Total Backlog
-            lob,             # C: LOB (Fraud / Non Fraud / Channel)
+            lob,             # C: LOB
             top_topic_str,   # D: Top mobile sub topic
             top_case_str,    # E: Case
-            aging_0_3,       # F: Aging ticket 0-3 Days
+            aging_0_3,       # F: 0-3 Days
             aging_3_7,       # G: 3-7
             aging_7_14,      # H: 7-14
             aging_14_plus,   # I: >14
             text_aging_30,   # J: AGING >30
             text_aging_60,   # K: AGING >60
-            analisa_text,    # L: Analisa from yesterday
+            analisa_text,    # L: Analisa
             trend_status,    # M: TREND
             change_val,      # N: CHANGE
             insight_text     # O: INSIGHT
@@ -173,7 +178,7 @@ def process_and_update_sheets(csv_bytes, file_name):
 
         worksheet.append_row(row_data, value_input_option="USER_ENTERED")
 
-    print("✅ Berhasil menulis baris per LOB pas di Kolom A sampai O!")
+    print("✅ Berhasil menulis baris per LOB ke Google Sheet!")
 
 # ==========================================
 # 4. UPLOAD CSV KE DRIVE
@@ -196,7 +201,7 @@ if __name__ == "__main__":
         csv_bytes, file_name, mail, email_id = download_latest_csv_from_gmail()
         
         if csv_bytes is None:
-            print("🚀 Tidak ada email baru. Workflow selesai.")
+            print("🚀 Tidak ada email baru/lampiran CSV. Automation selesai aman.")
             exit(0)
 
         process_and_update_sheets(csv_bytes, file_name)
@@ -205,5 +210,5 @@ if __name__ == "__main__":
         
         print("🎉 AUTOMATION SELESAI DENGAN SUKSES!")
     except Exception as e:
-        print(f"❌ ERROR: {str(e)}")
+        print(f"❌ ERROR DETECTED: {str(e)}")
         exit(1)
