@@ -2,9 +2,9 @@ name: Daily Backlog Automation
 
 on:
   schedule:
-    # 01:15 UTC = Jam 08:15 WIB (Menit 15 dipilih agar bebas antrean server jam bulat)
-    - cron: '15 1 * * *'
-  workflow_dispatch: # Memungkinkan tombol 'Run Manual' di GitHub
+    # 00:55 UTC = Jam 07:55 WIB (Setiap Hari)
+    - cron: '55 0 * * *'
+  workflow_dispatch: # Agar tombol 'Run Manual' tetap ada
 
 jobs:
   run-pipeline:
