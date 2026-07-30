@@ -31,7 +31,7 @@ credentials = Credentials.from_service_account_info(sa_info, scopes=scopes)
 gc = gspread.authorize(credentials)
 
 SPREADSHEET_ID = "1oI-f_KPFqTwe8Q0M3zva1f2QbbsBeegDi-7Yly-W1Cs"
-TARGET_SUBJECT = "All Pending - Backlog RTFM [06:00 AM]"
+TARGET_SUBJECT = "All Pending - Backlog RTFM"
 
 # =====================================================
 # HELPER FUNCTIONS
@@ -60,7 +60,7 @@ def aging(df):
     )
 
 # =====================================================
-# GMAIL SWEEPING FUNCTIONS
+# GMAIL SWEEPING FUNCTIONS (FIXED QUERY)
 # =====================================================
 def get_unprocessed_emails():
     """Mengambil SEMUA email yang memiliki subject spesifik dan belum dilabeli PROCESSED_BACKLOG."""
@@ -69,8 +69,8 @@ def get_unprocessed_emails():
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select("inbox")
 
-    # Search spesifik subject dan belum dilabeli
-    search_query = f'SUBJECT "{TARGET_SUBJECT}" NOT label:PROCESSED_BACKLOG'
+    # Format query Gmail aman dari karakter [ ]
+    search_query = 'subject:("All Pending - Backlog RTFM") -label:PROCESSED_BACKLOG'
     status, messages = mail.search(None, 'X-GM-RAW', search_query)
 
     mail_ids = messages[0].split()
@@ -87,7 +87,7 @@ def extract_email_data(mail, email_id):
         if isinstance(response_part, tuple):
             msg = email.message_from_bytes(response_part[1])
             
-            # --- EXTRACT TANGGAL ASLI EMAIL ---
+            # Extract Tanggal Asli Email
             date_header = msg.get("Date")
             if date_header:
                 try:
@@ -357,9 +357,9 @@ def run_pipeline():
             except Exception as e:
                 print(f"⚠️ Warning tab {sheet_name}: {e}")
 
-            # --- MAPPING DATA DENGAN TANGGAL EMAIL DINAMIS (`email_date`) ---
+            # MAPPING 16 KOLOM SESUAI HEADER
             row_dict = {
-                "Tanggal backlog": email_date,  # <-- Menggunakan tanggal asli email
+                "Tanggal backlog": email_date,
                 "Total Backlog": total_today,
                 "LOB (Fraud/NonFraud/Merchant/channel)": lob_name,
                 "LOB": lob_name,
@@ -383,11 +383,11 @@ def run_pipeline():
         print(f"📝 Menyimpan hasil analisa tanggal {email_date} ke BACKLOG_HISTORY...")
         history_ws.append_rows(history_rows_to_append, value_input_option="USER_ENTERED")
 
-        # TANDAI EMAIL SELESAI
+        # MARK EMAIL SEBAGAI PROCESSED
         mark_email_as_processed(mail, email_id)
 
     mail.logout()
-    print("\n🎉 SELURUH EMAIL BERHASIL DISAPU DAN DIPROSES DENGAN TANGGAL MASING-MASING!")
+    print("\n🎉 SELURUH EMAIL BERHASIL DISAPU DAN DIPROSES AKURAT!")
 
 if __name__ == "__main__":
     run_pipeline()
